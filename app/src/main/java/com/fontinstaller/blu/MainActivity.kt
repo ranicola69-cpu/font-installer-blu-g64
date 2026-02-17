@@ -1,13 +1,16 @@
 package com.fontinstaller.blu
 
 import android.Manifest
+import android.content.ComponentName
 import android.content.Intent
+import android.content.ServiceConnection
 import android.content.pm.PackageManager
 import android.graphics.Typeface
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.os.Environment
+import android.os.IBinder
 import android.provider.Settings
 import android.view.View
 import android.widget.Toast
@@ -19,7 +22,6 @@ import com.fontinstaller.blu.databinding.ActivityMainBinding
 import rikka.shizuku.Shizuku
 import java.io.File
 import java.io.FileOutputStream
-import java.io.InputStream
 
 class MainActivity : AppCompatActivity() {
 
@@ -28,8 +30,33 @@ class MainActivity : AppCompatActivity() {
     private var selectedFontName: String = ""
     private var isShizukuAvailable = false
     private var isShizukuPermissionGranted = false
+    private var userService: IUserService? = null
 
     private val SHIZUKU_REQUEST_CODE = 100
+
+    // UserService connection
+    private val userServiceConnection = object : ServiceConnection {
+        override fun onServiceConnected(name: ComponentName?, service: IBinder?) {
+            userService = IUserService.Stub.asInterface(service)
+            runOnUiThread {
+                showStatus("Shizuku service connected!", true)
+                updateShizukuStatus()
+            }
+        }
+
+        override fun onServiceDisconnected(name: ComponentName?) {
+            userService = null
+            runOnUiThread {
+                updateShizukuStatus()
+            }
+        }
+    }
+
+    private val userServiceArgs = Shizuku.UserServiceArgs(
+        ComponentName(BuildConfig.APPLICATION_ID, UserService::class.java.name)
+    ).processNameSuffix("user_service")
+        .debuggable(BuildConfig.DEBUG)
+        .version(BuildConfig.VERSION_CODE)
 
     // Shizuku permission result listener
     private val shizukuPermissionListener = Shizuku.OnRequestPermissionResultListener { requestCode, grantResult ->
@@ -38,6 +65,7 @@ class MainActivity : AppCompatActivity() {
             updateShizukuStatus()
             if (isShizukuPermissionGranted) {
                 showStatus("Shizuku permission granted!", true)
+                bindUserService()
             } else {
                 showStatus("Shizuku permission denied", false)
             }
@@ -55,6 +83,7 @@ class MainActivity : AppCompatActivity() {
     private val shizukuBinderDeadListener = Shizuku.OnBinderDeadListener {
         isShizukuAvailable = false
         isShizukuPermissionGranted = false
+        userService = null
         updateShizukuStatus()
     }
 
@@ -102,23 +131,23 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun handleIntent(intent: Intent) {
-        // Handle TTF file opened from file manager
         if (intent.action == Intent.ACTION_VIEW && intent.data != null) {
             handleSelectedFont(intent.data!!)
         }
     }
 
     private fun setupShizuku() {
-        // Add listeners
         Shizuku.addRequestPermissionResultListener(shizukuPermissionListener)
         Shizuku.addBinderReceivedListenerSticky(shizukuBinderReceivedListener)
         Shizuku.addBinderDeadListener(shizukuBinderDeadListener)
 
-        // Check initial state
         try {
             if (Shizuku.pingBinder()) {
                 isShizukuAvailable = true
                 checkShizukuPermission()
+                if (isShizukuPermissionGranted) {
+                    bindUserService()
+                }
             }
         } catch (e: Exception) {
             isShizukuAvailable = false
@@ -126,12 +155,19 @@ class MainActivity : AppCompatActivity() {
         updateShizukuStatus()
     }
 
+    private fun bindUserService() {
+        try {
+            Shizuku.bindUserService(userServiceArgs, userServiceConnection)
+        } catch (e: Exception) {
+            showStatus("Failed to bind service: ${e.message}", false)
+        }
+    }
+
     private fun checkShizukuPermission() {
         if (!isShizukuAvailable) return
 
         try {
             isShizukuPermissionGranted = if (Shizuku.isPreV11()) {
-                // Pre-v11 doesn't need permission check this way
                 false
             } else {
                 Shizuku.checkSelfPermission() == PackageManager.PERMISSION_GRANTED
@@ -149,7 +185,6 @@ class MainActivity : AppCompatActivity() {
 
         try {
             if (Shizuku.isPreV11()) {
-                // Shizuku pre-v11, show message
                 showStatus("Please update Shizuku to v11 or later", false)
             } else if (!isShizukuPermissionGranted) {
                 Shizuku.requestPermission(SHIZUKU_REQUEST_CODE)
@@ -161,10 +196,15 @@ class MainActivity : AppCompatActivity() {
 
     private fun updateShizukuStatus() {
         runOnUiThread {
-            if (isShizukuAvailable && isShizukuPermissionGranted) {
+            val serviceReady = userService != null
+            if (isShizukuAvailable && isShizukuPermissionGranted && serviceReady) {
                 binding.shizukuStatusIndicator.setBackgroundResource(R.drawable.status_indicator_green)
                 binding.shizukuStatusText.text = getString(R.string.shizuku_connected)
                 binding.btnInstallFont.isEnabled = selectedFontUri != null
+            } else if (isShizukuAvailable && isShizukuPermissionGranted) {
+                binding.shizukuStatusIndicator.setBackgroundResource(R.drawable.status_indicator_green)
+                binding.shizukuStatusText.text = "Shizuku Ready - Connecting..."
+                binding.btnInstallFont.isEnabled = false
             } else if (isShizukuAvailable) {
                 binding.shizukuStatusIndicator.setBackgroundResource(R.drawable.status_indicator_red)
                 binding.shizukuStatusText.text = "Shizuku Running - Permission Required"
@@ -185,6 +225,8 @@ class MainActivity : AppCompatActivity() {
         binding.btnInstallFont.setOnClickListener {
             if (!isShizukuPermissionGranted) {
                 requestShizukuPermission()
+            } else if (userService == null) {
+                bindUserService()
             } else {
                 selectedFontUri?.let { installFont(it) }
             }
@@ -207,12 +249,10 @@ class MainActivity : AppCompatActivity() {
             if (intent != null) {
                 startActivity(intent)
             } else {
-                // Shizuku not installed, open Play Store
                 val playStoreIntent = Intent(Intent.ACTION_VIEW, Uri.parse("market://details?id=moe.shizuku.privileged.api"))
                 try {
                     startActivity(playStoreIntent)
                 } catch (e: Exception) {
-                    // Play Store not available, open web
                     startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://play.google.com/store/apps/details?id=moe.shizuku.privileged.api")))
                 }
             }
@@ -223,14 +263,12 @@ class MainActivity : AppCompatActivity() {
 
     private fun checkStoragePermissionAndOpenPicker() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-            // Android 11+
             if (Environment.isExternalStorageManager()) {
                 openFilePicker()
             } else {
-                // Request manage all files permission
                 AlertDialog.Builder(this)
                     .setTitle("Storage Permission")
-                    .setMessage("This app needs access to your files to select fonts. Please grant the permission on the next screen.")
+                    .setMessage("This app needs access to your files to select fonts.")
                     .setPositiveButton("OK") { _, _ ->
                         val intent = Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION)
                         intent.data = Uri.parse("package:$packageName")
@@ -240,7 +278,6 @@ class MainActivity : AppCompatActivity() {
                     .show()
             }
         } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-            // Android 6-10
             val permissions = arrayOf(
                 Manifest.permission.READ_EXTERNAL_STORAGE,
                 Manifest.permission.WRITE_EXTERNAL_STORAGE
@@ -276,11 +313,9 @@ class MainActivity : AppCompatActivity() {
             binding.selectedFontName.text = fileName
             binding.selectedFontPath.text = uri.path ?: uri.toString()
 
-            // Try to load and preview the font
             loadFontPreview(uri)
 
-            // Enable install button if Shizuku is ready
-            binding.btnInstallFont.isEnabled = isShizukuAvailable && isShizukuPermissionGranted
+            binding.btnInstallFont.isEnabled = userService != null
 
             showStatus("Font selected: $fileName", true)
         } catch (e: Exception) {
@@ -304,7 +339,6 @@ class MainActivity : AppCompatActivity() {
 
     private fun loadFontPreview(uri: Uri) {
         try {
-            // Copy font to a temp file to load as Typeface
             val tempFile = File(cacheDir, "temp_font.ttf")
             contentResolver.openInputStream(uri)?.use { input ->
                 FileOutputStream(tempFile).use { output ->
@@ -319,13 +353,13 @@ class MainActivity : AppCompatActivity() {
             tempFile.delete()
         } catch (e: Exception) {
             binding.previewCard.visibility = View.GONE
-            // Font preview failed, but continue anyway
         }
     }
 
     private fun installFont(uri: Uri) {
-        if (!isShizukuAvailable || !isShizukuPermissionGranted) {
-            showStatus("Shizuku not ready. Please ensure Shizuku is running and permission is granted.", false)
+        val service = userService
+        if (service == null) {
+            showStatus("Shizuku service not connected. Please try again.", false)
             return
         }
 
@@ -342,13 +376,12 @@ class MainActivity : AppCompatActivity() {
                     }
                 }
 
-                // Use Shizuku shell to copy font to system fonts directory
-                val result = executeShizukuCommand(fontFile)
+                val result = executeInstallation(service, fontFile)
 
                 runOnUiThread {
                     showProgress(false)
                     if (result.success) {
-                        showSuccessDialog()
+                        showSuccessDialog(result.message)
                     } else {
                         showStatus("Installation failed: ${result.message}", false)
                     }
@@ -365,88 +398,47 @@ class MainActivity : AppCompatActivity() {
         }.start()
     }
 
-    private data class CommandResult(val success: Boolean, val message: String)
+    private data class InstallResult(val success: Boolean, val message: String)
 
-    private fun executeShizukuCommand(fontFile: File): CommandResult {
+    private fun executeInstallation(service: IUserService, fontFile: File): InstallResult {
         return try {
             val fontName = selectedFontName.replace(" ", "_")
+            val sourcePath = fontFile.absolutePath
+            
+            // Method 1: Try /data/fonts (Android 12+)
+            var result = service.executeCommand("mkdir -p /data/fonts/files/0")
             val targetPath = "/data/fonts/files/0/$fontName"
             
-            // Method 1: Try copying to /data/fonts (Android 12+)
-            var process = Shizuku.newProcess(arrayOf("sh", "-c", "mkdir -p /data/fonts/files/0"), null, null)
-            process.waitFor()
-            
-            // Copy the font file using cat
-            val sourcePath = fontFile.absolutePath
-            process = Shizuku.newProcess(arrayOf("sh", "-c", "cat '$sourcePath' > '$targetPath'"), null, null)
-            var exitCode = process.waitFor()
-            
-            if (exitCode == 0) {
-                // Set permissions
-                process = Shizuku.newProcess(arrayOf("sh", "-c", "chmod 644 '$targetPath'"), null, null)
-                process.waitFor()
-                
-                // Try to update font config
-                updateFontConfig(fontName, targetPath)
-                
-                return CommandResult(true, "Font copied to system. Reboot required.")
+            result = service.executeCommand("cp '$sourcePath' '$targetPath' && chmod 644 '$targetPath'")
+            if (!result.startsWith("ERROR") && !result.startsWith("EXCEPTION")) {
+                return InstallResult(true, "Font installed to /data/fonts. Reboot required.")
             }
             
-            // Method 2: Try /system/fonts (may fail without root remount)
-            val systemFontPath = "/system/fonts/$fontName"
-            process = Shizuku.newProcess(arrayOf("sh", "-c", "mount -o rw,remount /system 2>/dev/null; cat '$sourcePath' > '$systemFontPath'; chmod 644 '$systemFontPath'"), null, null)
-            exitCode = process.waitFor()
-            
-            if (exitCode == 0) {
-                return CommandResult(true, "Font installed to /system/fonts. Reboot required.")
+            // Method 2: Try /system/fonts with remount
+            val systemPath = "/system/fonts/$fontName"
+            result = service.executeCommand("mount -o rw,remount /system 2>/dev/null; cp '$sourcePath' '$systemPath' && chmod 644 '$systemPath'")
+            if (!result.startsWith("ERROR") && !result.startsWith("EXCEPTION")) {
+                return InstallResult(true, "Font installed to /system/fonts. Reboot required.")
             }
             
-            // Method 3: Copy to accessible location and provide instructions
+            // Method 3: Copy to Downloads as fallback
             val downloadPath = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS).absolutePath + "/$fontName"
             fontFile.copyTo(File(downloadPath), overwrite = true)
             
-            CommandResult(true, "Font copied to Downloads. Use a file manager with Shizuku to install manually, or try MT Manager method.")
+            InstallResult(true, "Font copied to Downloads folder. Use MT Manager + Shizuku for manual installation.")
             
         } catch (e: Exception) {
-            CommandResult(false, e.message ?: "Unknown error")
+            InstallResult(false, e.message ?: "Unknown error")
         }
     }
 
-    private fun updateFontConfig(fontName: String, fontPath: String) {
-        try {
-            // Try to update font fallback config (Android 12+)
-            val configContent = """
-                <?xml version="1.0" encoding="utf-8"?>
-                <fonts>
-                    <family name="custom-font">
-                        <font weight="400" style="normal">$fontPath</font>
-                    </family>
-                </fonts>
-            """.trimIndent()
-            
-            val configFile = File(cacheDir, "custom_fonts.xml")
-            configFile.writeText(configContent)
-            
-            val process = Shizuku.newProcess(
-                arrayOf("sh", "-c", "cat '${configFile.absolutePath}' > /data/fonts/config/custom_fonts.xml 2>/dev/null"),
-                null, null
-            )
-            process.waitFor()
-            
-            configFile.delete()
-        } catch (e: Exception) {
-            // Config update failed, continue anyway
-        }
-    }
-
-    private fun showSuccessDialog() {
+    private fun showSuccessDialog(message: String) {
         AlertDialog.Builder(this)
             .setTitle("Font Installed")
-            .setMessage(getString(R.string.reboot_required))
+            .setMessage(message)
             .setPositiveButton("Reboot Now") { _, _ ->
                 try {
-                    val process = Shizuku.newProcess(arrayOf("sh", "-c", "reboot"), null, null)
-                    process.waitFor()
+                    userService?.executeCommand("reboot")
                 } catch (e: Exception) {
                     showStatus("Could not reboot automatically. Please reboot manually.", false)
                 }
@@ -458,7 +450,7 @@ class MainActivity : AppCompatActivity() {
     private fun showShizukuNotRunningDialog() {
         AlertDialog.Builder(this)
             .setTitle("Shizuku Not Running")
-            .setMessage("Shizuku service is not running. Please:\n\n1. Open Shizuku app\n2. Enable Wireless Debugging in Developer Options\n3. Pair using the pairing code\n4. Start Shizuku service")
+            .setMessage("Shizuku service is not running. Please:\n\n1. Open Shizuku app\n2. Enable Wireless Debugging\n3. Pair using the pairing code\n4. Start Shizuku service")
             .setPositiveButton("Open Shizuku") { _, _ -> openShizukuApp() }
             .setNegativeButton("Cancel", null)
             .show()
@@ -467,7 +459,7 @@ class MainActivity : AppCompatActivity() {
     private fun showProgress(show: Boolean) {
         binding.progressIndicator.visibility = if (show) View.VISIBLE else View.GONE
         binding.btnSelectFont.isEnabled = !show
-        binding.btnInstallFont.isEnabled = !show && isShizukuPermissionGranted && selectedFontUri != null
+        binding.btnInstallFont.isEnabled = !show && userService != null && selectedFontUri != null
     }
 
     private fun showStatus(message: String, isSuccess: Boolean) {
@@ -482,9 +474,13 @@ class MainActivity : AppCompatActivity() {
 
     override fun onDestroy() {
         super.onDestroy()
-        // Remove listeners
         Shizuku.removeRequestPermissionResultListener(shizukuPermissionListener)
         Shizuku.removeBinderReceivedListener(shizukuBinderReceivedListener)
         Shizuku.removeBinderDeadListener(shizukuBinderDeadListener)
+        try {
+            Shizuku.unbindUserService(userServiceArgs, userServiceConnection, true)
+        } catch (e: Exception) {
+            // Ignore
+        }
     }
 }
