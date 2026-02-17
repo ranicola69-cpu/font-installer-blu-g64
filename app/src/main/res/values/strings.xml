@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Font Installer</string>
+    <string name="select_font">Select TTF Font</string>
+    <string name="install_font">Install Font</string>
+    <string name="shizuku_status">Shizuku Status</string>
+    <string name="font_preview">Font Preview</string>
+    <string name="no_font_selected">No font selected</string>
+    <string name="installing">Installing font...</string>
+    <string name="success">Font installed successfully!</string>
+    <string name="error">Error installing font</string>
+    <string name="shizuku_not_running">Shizuku is not running. Please start Shizuku first.</string>
+    <string name="shizuku_permission_denied">Shizuku permission denied</string>
+    <string name="shizuku_connected">Shizuku Connected</string>
+    <string name="shizuku_disconnected">Shizuku Not Available</string>
+    <string name="preview_text">The quick brown fox jumps over the lazy dog.\nABCDEFGHIJKLMNOPQRSTUVWXYZ\nabcdefghijklmnopqrstuvwxyz\n0123456789</string>
+    <string name="reboot_required">Font installed! Please reboot your device to apply changes.</string>
+</resources>
