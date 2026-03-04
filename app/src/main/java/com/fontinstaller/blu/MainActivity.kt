@@ -16,10 +16,8 @@ import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
 import com.fontinstaller.blu.databinding.ActivityMainBinding
 import rikka.shizuku.Shizuku
-import java.io.BufferedReader
 import java.io.File
 import java.io.FileOutputStream
-import java.io.InputStreamReader
 
 class MainActivity : AppCompatActivity() {
 
@@ -183,51 +181,32 @@ class MainActivity : AppCompatActivity() {
 
     private fun installFont(uri: Uri) {
         showProgress(true)
-        showStatus("Installing font...", true)
+        showStatus("Preparing font...", true)
         Thread {
             try {
                 val fontFile = File(cacheDir, "install_font.ttf")
                 contentResolver.openInputStream(uri)?.use { input -> FileOutputStream(fontFile).use { input.copyTo(it) } }
-                val result = runShellCommand(fontFile)
+                
+                // Copy font to Downloads folder
+                val fontName = selectedFontName.replace(" ", "_")
+                val dlDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
+                val destFile = File(dlDir, fontName)
+                fontFile.copyTo(destFile, overwrite = true)
+                
+                fontFile.delete()
+                
                 runOnUiThread {
                     showProgress(false)
-                    if (result.first) showSuccessDialog(result.second)
-                    else showStatus(result.second, false)
+                    showSuccessDialog("Font saved to:\nDownloads/$fontName\n\nTo apply system-wide:\n1. Open MT Manager\n2. Grant Shizuku permission\n3. Copy font to /system/fonts/\n4. Reboot device")
                 }
-                fontFile.delete()
             } catch (e: Exception) {
                 runOnUiThread { showProgress(false); showStatus("Error: ${e.message}", false) }
             }
         }.start()
     }
 
-    private fun runShellCommand(fontFile: File): Pair<Boolean, String> {
-        val fontName = selectedFontName.replace(" ", "_")
-        val src = fontFile.absolutePath
-        
-        // Copy to Downloads as primary method
-        val dlPath = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS).absolutePath + "/" + fontName
-        fontFile.copyTo(File(dlPath), overwrite = true)
-        
-        // Try system installation via Shizuku shell
-        val commands = listOf(
-            "mkdir -p /data/fonts/files/0 && cp '$src' '/data/fonts/files/0/$fontName' && chmod 644 '/data/fonts/files/0/$fontName'",
-            "mount -o rw,remount /system 2>/dev/null; cp '$src' '/system/fonts/$fontName' && chmod 644 '/system/fonts/$fontName'"
-        )
-        
-        for (cmd in commands) {
-            try {
-                val process = Shizuku.newProcess(arrayOf("sh", "-c", cmd), null, null)
-                val exitCode = process.waitFor()
-                if (exitCode == 0) return Pair(true, "Font installed! Reboot your device to apply.")
-            } catch (e: Exception) { continue }
-        }
-        
-        return Pair(true, "Font saved to Downloads/$fontName\nUse MT Manager + Shizuku to install manually.")
-    }
-
     private fun showSuccessDialog(msg: String) {
-        AlertDialog.Builder(this).setTitle("Success").setMessage(msg)
+        AlertDialog.Builder(this).setTitle("Font Ready").setMessage(msg)
             .setPositiveButton("OK", null).show()
     }
 
