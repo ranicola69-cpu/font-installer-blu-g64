@@ -17,34 +17,29 @@ jobs:
           java-version: '17'
           distribution: 'temurin'
 
-      - name: Make gradlew executable
-        run: |
-          echo 'distributionUrl=https\://services.gradle.org/distributions/gradle-8.5-bin.zip' > gradle/wrapper/gradle-wrapper.properties
-          cat > gradlew << 'GRADLEW'
-          #!/bin/sh
-          exec gradle "$@"
-          GRADLEW
-          chmod +x gradlew
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
 
-      - name: Setup Gradle
-        uses: gradle/actions/setup-gradle@v3
-        with:
-          cache-disabled: true
+      - name: Create gradle wrapper
+        run: |
+          mkdir -p gradle/wrapper
+          cat > gradle/wrapper/gradle-wrapper.properties << 'EOF'
+          distributionBase=GRADLE_USER_HOME
+          distributionPath=wrapper/dists
+          distributionUrl=https\://services.gradle.org/distributions/gradle-8.2-bin.zip
+          zipStoreBase=GRADLE_USER_HOME
+          zipStorePath=wrapper/dists
+          EOF
+          gradle wrapper
+
+      - name: Make gradlew executable
+        run: chmod +x gradlew
 
       - name: Build Debug APK
-        run: gradle assembleDebug --no-daemon
-
-      - name: Build Release APK
-        run: gradle assembleRelease --no-daemon
+        run: ./gradlew assembleDebug --no-daemon --stacktrace
 
       - name: Upload Debug APK
         uses: actions/upload-artifact@v4
         with:
-          name: Universal-Font-Installer-Debug
+          name: Universal-Font-Installer-APK
           path: app/build/outputs/apk/debug/app-debug.apk
-
-      - name: Upload Release APK
-        uses: actions/upload-artifact@v4
-        with:
-          name: Universal-Font-Installer-Release
-          path: app/build/outputs/apk/release/app-release-unsigned.apk
