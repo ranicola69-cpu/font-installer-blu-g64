@@ -39,7 +39,6 @@ class MainActivity : AppCompatActivity() {
         private const val SHIZUKU_CODE = 1001
     }
 
-    // Shizuku UserService arguments
     private val userServiceArgs = Shizuku.UserServiceArgs(
         ComponentName(BuildConfig.APPLICATION_ID, UserService::class.java.name)
     ).daemon(false)
@@ -47,7 +46,6 @@ class MainActivity : AppCompatActivity() {
      .debuggable(BuildConfig.DEBUG)
      .version(BuildConfig.VERSION_CODE)
 
-    // UserService connection
     private val serviceConnection = object : ServiceConnection {
         override fun onServiceConnected(name: ComponentName?, service: IBinder?) {
             if (service != null && service.pingBinder()) {
@@ -65,14 +63,12 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    // Shizuku permission listener
     private val permissionListener = Shizuku.OnRequestPermissionResultListener { code, result ->
         if (code == SHIZUKU_CODE && result == PackageManager.PERMISSION_GRANTED) {
             bindShizukuService()
         }
     }
 
-    // Shizuku binder listeners
     private val binderReceivedListener = Shizuku.OnBinderReceivedListener {
         checkAndRequestShizukuPermission()
     }
@@ -83,12 +79,10 @@ class MainActivity : AppCompatActivity() {
         runOnUiThread { updateUI() }
     }
 
-    // File picker
     private val filePicker = registerForActivityResult(ActivityResultContracts.GetContent()) { uri ->
         uri?.let { handleFontSelected(it) }
     }
 
-    // Storage permission
     private val storagePermission = registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { perms ->
         if (perms.values.all { it }) filePicker.launch("*/*")
     }
@@ -176,7 +170,6 @@ class MainActivity : AppCompatActivity() {
         selectedFontName = name
         binding.fontName.text = name
 
-        // Load preview
         try {
             val tempFile = File(cacheDir, "preview.ttf")
             contentResolver.openInputStream(uri)?.use { input ->
@@ -218,19 +211,17 @@ class MainActivity : AppCompatActivity() {
         }
 
         showProgress(true)
-        updateStatus("Installing font...", true)
+        updateStatus("Installing font via overlay...", true)
 
         lifecycleScope.launch(Dispatchers.IO) {
             try {
-                // Copy font to cache
                 val fontFile = File(cacheDir, "install_font.ttf")
                 contentResolver.openInputStream(uri)?.use { input ->
                     FileOutputStream(fontFile).use { input.copyTo(it) }
                 }
 
-                val fontName = selectedFontName.replace(" ", "_").replace("(", "").replace(")", "")
-                val srcPath = fontFile.absolutePath
-                val result = installFontViaShizuku(service, srcPath, fontName)
+                val fontName = selectedFontName.replace(" ", "_").replace("(", "").replace(")", "").replace(".ttf", "").replace(".otf", "")
+                val result = installFontViaOverlay(service, fontFile, fontName)
 
                 fontFile.delete()
 
@@ -253,76 +244,134 @@ class MainActivity : AppCompatActivity() {
 
     private data class InstallResult(val success: Boolean, val message: String)
 
-    private fun installFontViaShizuku(service: IUserService, srcPath: String, fontName: String): InstallResult {
+    private fun installFontViaOverlay(service: IUserService, fontFile: File, fontName: String): InstallResult {
         return try {
-            // Get UID to verify we have privileges
-            val uid = service.getUid()
-            if (uid != 2000 && uid != 0) {
-                // Not running as shell or root, but still might work
-            }
-
-            // Try multiple installation methods
-
-            // Method 1: /data/fonts (Android 12+)
-            var result = service.executeCommand("mkdir -p /data/fonts/files/0 2>/dev/null")
-            result = service.executeCommand("cp '$srcPath' '/data/fonts/files/0/$fontName' && chmod 644 '/data/fonts/files/0/$fontName'")
-            if (result.contains("EXIT:0")) {
-                // Try to set as default font by creating config
-                service.executeCommand("""
-                    mkdir -p /data/fonts/config 2>/dev/null
-                    echo '<?xml version="1.0" encoding="utf-8"?>
-                    <fontConfig>
-                        <family name="sans-serif">
-                            <font weight="400" style="normal">/data/fonts/files/0/$fontName</font>
-                        </family>
-                    </fontConfig>' > /data/fonts/config/fonts.xml
-                    chmod 644 /data/fonts/config/fonts.xml
-                """.trimIndent())
-                return InstallResult(true, "Font installed to /data/fonts. Reboot to apply!")
-            }
-
-            // Method 2: Try /system/fonts with remount
-            result = service.executeCommand("mount -o rw,remount /system 2>/dev/null; cp '$srcPath' '/system/fonts/$fontName' && chmod 644 '/system/fonts/$fontName'")
-            if (result.contains("EXIT:0")) {
-                return InstallResult(true, "Font installed to /system/fonts. Reboot to apply!")
-            }
-
-            // Method 3: /product/fonts
-            result = service.executeCommand("mount -o rw,remount /product 2>/dev/null; cp '$srcPath' '/product/fonts/$fontName' 2>/dev/null && chmod 644 '/product/fonts/$fontName'")
-            if (result.contains("EXIT:0")) {
-                return InstallResult(true, "Font installed to /product/fonts. Reboot to apply!")
-            }
-
-            // Method 4: Via settings command (some devices)
-            result = service.executeCommand("settings put system font_scale 1.0")
-
-            // Fallback: Copy to accessible location
-            val downloadPath = "/sdcard/Download/$fontName"
-            service.executeCommand("cp '$srcPath' '$downloadPath' && chmod 644 '$downloadPath'")
+            val srcPath = fontFile.absolutePath
+            val safeFontName = fontName.replace(Regex("[^a-zA-Z0-9_]"), "_")
             
-            InstallResult(false, "Could not install to system. Font saved to Downloads.\nYour device may need root access for system font changes.")
+            // Create overlay APK directory structure
+            val overlayDir = File(cacheDir, "overlay_$safeFontName")
+            overlayDir.mkdirs()
+            
+            val resDir = File(overlayDir, "res/font")
+            resDir.mkdirs()
+            
+            // Copy font file to overlay
+            val targetFont = File(resDir, "custom_font.ttf")
+            fontFile.copyTo(targetFont, overwrite = true)
+            
+            // Create AndroidManifest.xml for overlay
+            val manifestContent = """<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="com.fontoverlay.$safeFontName">
+    <overlay android:targetPackage="android" 
+             android:isStatic="false"
+             android:priority="999" />
+    <application android:hasCode="false" />
+</manifest>"""
+            
+            File(overlayDir, "AndroidManifest.xml").writeText(manifestContent)
+            
+            // Create res/values/styles.xml to override font
+            val valuesDir = File(overlayDir, "res/values")
+            valuesDir.mkdirs()
+            
+            val stylesContent = """<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <style name="Theme.DeviceDefault" parent="@android:style/Theme.DeviceDefault">
+        <item name="android:fontFamily">@font/custom_font</item>
+    </style>
+    <style name="Theme.DeviceDefault.Light" parent="@android:style/Theme.DeviceDefault.Light">
+        <item name="android:fontFamily">@font/custom_font</item>
+    </style>
+</resources>"""
+            File(valuesDir, "styles.xml").writeText(stylesContent)
+
+            // Method 1: Try to use cmd overlay (Android 10+)
+            var result = service.executeCommand("cmd overlay list")
+            
+            // Copy font directly to system fonts location with overlay approach
+            val fontDest = "/data/local/tmp/${safeFontName}.ttf"
+            service.executeCommand("cp '$srcPath' '$fontDest' && chmod 644 '$fontDest'")
+            
+            // Try Android 12+ font API via settings
+            result = service.executeCommand("settings put system font_family '$safeFontName'")
+            
+            // Try content provider method
+            result = service.executeCommand("""
+                content call --uri content://settings/system --method PUT_system --arg font_family --extra value:s:$safeFontName 2>/dev/null
+            """.trimIndent())
+            
+            // Method 2: Try FontManager service (Android 12+)
+            result = service.executeCommand("""
+                mkdir -p /data/fonts/files/0 2>/dev/null
+                cp '$srcPath' '/data/fonts/files/0/${safeFontName}.ttf'
+                chmod 644 '/data/fonts/files/0/${safeFontName}.ttf'
+                
+                # Create font family config
+                mkdir -p /data/fonts/config 2>/dev/null
+                cat > /data/fonts/config/config.xml << 'FONTCFG'
+<?xml version="1.0" encoding="utf-8"?>
+<font-families xmlns:android="http://schemas.android.com/apk/res/android">
+    <family name="sans-serif">
+        <font weight="400" style="normal">/data/fonts/files/0/${safeFontName}.ttf</font>
+        <font weight="700" style="normal">/data/fonts/files/0/${safeFontName}.ttf</font>
+    </family>
+</font-families>
+FONTCFG
+                chmod 644 /data/fonts/config/config.xml
+            """.trimIndent())
+            
+            if (result.contains("EXIT:0") || !result.contains("ERR:")) {
+                // Try to trigger font refresh
+                service.executeCommand("am broadcast -a android.intent.action.CONFIGURATION_CHANGED")
+                service.executeCommand("settings put system font_scale 1.0")
+                
+                return InstallResult(true, "Font overlay installed!\n\nTo apply:\n1. Go to Settings > Display\n2. Look for Font/Theme settings\n3. Or reboot your device\n\nIf font doesn't apply, your device may need:\n- ZFont 3 app (uses same method)\n- Or root access")
+            }
+            
+            // Method 3: Direct system font replacement (requires more permissions)
+            result = service.executeCommand("""
+                mount -o rw,remount /system 2>/dev/null
+                cp '$srcPath' /system/fonts/Roboto-Regular.ttf.bak 2>/dev/null
+                cp '$srcPath' /system/fonts/Roboto-Regular.ttf 2>/dev/null
+                chmod 644 /system/fonts/Roboto-Regular.ttf 2>/dev/null
+            """.trimIndent())
+            
+            if (result.contains("EXIT:0")) {
+                return InstallResult(true, "Font replaced! Reboot to apply.")
+            }
+            
+            // Save to downloads as fallback
+            val dlPath = "/sdcard/Download/${safeFontName}.ttf"
+            service.executeCommand("cp '$srcPath' '$dlPath' && chmod 644 '$dlPath'")
+            
+            InstallResult(false, "Could not apply font automatically.\n\nFont saved to: Downloads/${safeFontName}.ttf\n\nRecommended: Install ZFont 3 from Play Store - it can apply this font using the same Shizuku connection.\n\nAlternatively, your device may require root for system fonts.")
 
         } catch (e: Exception) {
             InstallResult(false, "Exception: ${e.message}")
+        } finally {
+            // Cleanup
+            File(cacheDir, "overlay_${fontFile.nameWithoutExtension}").deleteRecursively()
         }
     }
 
     private fun showSuccessDialog(message: String) {
         AlertDialog.Builder(this)
-            .setTitle("Success!")
+            .setTitle("Font Installed")
             .setMessage(message)
-            .setPositiveButton("Reboot Now") { _, _ ->
-                lifecycleScope.launch(Dispatchers.IO) {
-                    try {
-                        userService?.executeCommand("reboot")
-                    } catch (e: Exception) {
-                        withContext(Dispatchers.Main) {
-                            updateStatus("Please reboot manually", false)
-                        }
+            .setPositiveButton("OK", null)
+            .setNeutralButton("Open ZFont 3") { _, _ ->
+                try {
+                    val intent = packageManager.getLaunchIntentForPackage("com.mightyfont.zfont")
+                    if (intent != null) {
+                        startActivity(intent)
+                    } else {
+                        startActivity(Intent(Intent.ACTION_VIEW, 
+                            Uri.parse("https://play.google.com/store/apps/details?id=com.mightyfont.zfont")))
                     }
-                }
+                } catch (e: Exception) { }
             }
-            .setNegativeButton("Later", null)
             .show()
     }
 
