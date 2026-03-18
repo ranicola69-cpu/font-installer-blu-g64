@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Universal Font Installer</string>
+    <string name="select_font">Select TTF Font</string>
+    <string name="install_font">Install System Font</string>
+    <string name="shizuku_connected">Shizuku Connected</string>
+    <string name="shizuku_disconnected">Shizuku Not Running</string>
+    <string name="no_font_selected">No font selected</string>
+    <string name="preview_text">The quick brown fox jumps over the lazy dog.\nABCDEFGHIJKLMNOPQRSTUVWXYZ\nabcdefghijklmnopqrstuvwxyz\n0123456789</string>
+</resources>
